@@ -3,6 +3,8 @@ import React, { useState, useCallback, useRef } from 'react';
 import Draggable from 'react-draggable';
 import html2canvas from 'html2canvas';
 import 'bootstrap/dist/css/bootstrap.css';
+import pica from 'pica';
+
 
 const RESOLUTIONS = {
     '4K': { width: 3840, height: 2160 },
@@ -15,6 +17,10 @@ export default function Home() {
     const [images, setImages] = useState([]);
     const [inputText, setInputText] = useState('');
     const [selectedResolution, setSelectedResolution] = useState('1080p');
+    const [selectedElement, setSelectedElement] = useState(null);
+    const [selectedType, setSelectedType] = useState(null);
+
+    const [zIndices, setZIndices] = useState({ texts: {}, images: {} });
 
     const textRefs = useRef([]);
     const imageRefs = useRef([]);
@@ -70,51 +76,82 @@ export default function Home() {
         }, { once: true });
     }, []);
 
+    const increaseZIndex = useCallback((index, type) => {
+        setZIndices((prev) => {
+            let updated = { ...prev };
+            updated[type][index] = (updated[type][index] || 0) + 1;
+            return updated;
+        });
+    }, []);
+
+    const decreaseZIndex = useCallback((index, type) => {
+        setZIndices((prev) => {
+            let updated = { ...prev };
+            if (updated[type][index] > 0) {
+                updated[type][index] -= 1;
+            }
+            return updated;
+        });
+    }, []);
 
     const exportToImage = useCallback(() => {
         const node = document.getElementById('canvas');
-      
-        const resolutions = {
-            '4K': { width: 3840, height: 2160 },
-            '1080p': { width: 1920, height: 1080 },
-            '720p': { width: 1280, height: 720 },
-        };
-      
-        const { width, height } = resolutions[selectedResolution];
-      
+
+        const { width, height } = RESOLUTIONS[selectedResolution];
+
         html2canvas(node).then(capturedCanvas => {
             const contentWidth = capturedCanvas.width;
             const contentHeight = capturedCanvas.height;
-        
+
             // Adjust the scale to fit the resolution
             const scale = Math.max(width / contentWidth, height / contentHeight);
-        
+
             const scaledWidth = contentWidth * scale;
             const scaledHeight = contentHeight * scale;
-        
+
             // Calculate offsets to center the content
             const offsetX = (width - scaledWidth) / 2;
             const offsetY = (height - scaledHeight) / 2;
-        
-            const newCanvas = document.createElement('canvas');
-            newCanvas.width = width;
-            newCanvas.height = height;
-            const context = newCanvas.getContext('2d');
-        
-            // Fill background with white color to avoid transparency issues
-            context.fillStyle = "white"; 
-            context.fillRect(0, 0, width, height);
-            
-            // Draw the captured content onto the new canvas, scaled and centered
-            context.drawImage(capturedCanvas, 0, 0, contentWidth, contentHeight, offsetX, offsetY, scaledWidth, scaledHeight);
-        
-            const link = document.createElement('a');
-            link.download = 'my-image.png';
-            link.href = newCanvas.toDataURL('image/png');
-            link.click();
+
+            const scaledCanvas = document.createElement('canvas');
+            scaledCanvas.width = scaledWidth;
+            scaledCanvas.height = scaledHeight;
+            scaledCanvas.textBaseline = 'top';
+
+            // Use pica to resize the image with high quality to an intermediate canvas
+            pica({ features: ['all'], quality: 3 })
+                .resize(capturedCanvas, scaledCanvas, { unsharpAmount: 80, unsharpRadius: 0.6, unsharpThreshold: 1 })
+                .then(() => {
+                    const finalCanvas = document.createElement('canvas');
+                    finalCanvas.width = width;
+                    finalCanvas.height = height;
+                    finalCanvas.imageSmoothingEnabled = true;
+                    finalCanvas.imageSmoothingQuality = 'high';
+
+                    const context = finalCanvas.getContext('2d');
+
+                    // Fill background with white color to avoid transparency issues
+                    context.fillStyle = "white";
+                    context.fillRect(0, 0, width, height);
+
+                    // Now upscale it to the final resolution while maintaining the aspect ratio
+                    return pica().resize(scaledCanvas, finalCanvas);
+                })
+                .then((resultCanvas) => {
+                    // Draw the high-quality resized image onto the final canvas
+                    const context = resultCanvas.getContext('2d');
+
+                    // Draw the high-quality resized image onto the final canvas
+                    context.drawImage(resultCanvas, offsetX, offsetY, scaledWidth, scaledHeight);
+
+                    // Continue with your existing code to export the image...
+                    const link = document.createElement('a');
+                    link.download = 'my-image.png';
+                    link.href = resultCanvas.toDataURL('image/png');
+                    link.click();
+                });
         });
     }, [selectedResolution]);
-    
 
     return (
         <div className="container vh-100">
@@ -131,13 +168,28 @@ export default function Home() {
                 selectedResolution={selectedResolution}
                 setSelectedResolution={setSelectedResolution}
                 exportToImage={exportToImage}
+                increaseZIndex={increaseZIndex}
+                decreaseZIndex={decreaseZIndex}
+                selectedElement={selectedElement}
+                selectedType={selectedType}
             />
-            <Canvas texts={texts} images={images} textRefs={textRefs} imageRefs={imageRefs} handleResizeStart={handleResizeStart} />
+            <Canvas
+                texts={texts}
+                images={images}
+                textRefs={textRefs}
+                imageRefs={imageRefs}
+                handleResizeStart={handleResizeStart}
+                increaseZIndex={increaseZIndex}
+                decreaseZIndex={decreaseZIndex}
+                zIndices={zIndices}
+                setSelectedElement={setSelectedElement}
+                setSelectedType={setSelectedType}
+            />
         </div>
     );
 }
 
-function Controls({ inputText, setInputText, addText, addImage, selectedResolution, setSelectedResolution, exportToImage }) {
+function Controls({ inputText, setInputText, addText, addImage, selectedResolution, setSelectedResolution, selectedElement, increaseZIndex, decreaseZIndex, exportToImage, selectedType }) {
     return (
         <div className="d-flex justify-content-start align-items-center py-3">
             <input
@@ -159,21 +211,38 @@ function Controls({ inputText, setInputText, addText, addImage, selectedResoluti
                 ))}
             </select>
             <button className="btn btn-success" onClick={exportToImage}>Export</button>
+            <>
+                <button className="btn btn-secondary me-2" onClick={() => increaseZIndex(selectedElement, selectedType)} disabled={selectedElement === null}>Up</button>
+                <button className="btn btn-secondary me-2" onClick={() => decreaseZIndex(selectedElement, selectedType)} disabled={selectedElement === null}>Down</button>
+            </>
         </div>
     );
 }
 
-function Canvas({ texts, images, textRefs, imageRefs, handleResizeStart }) {
+function Canvas({ texts, images, textRefs, imageRefs, handleResizeStart, increaseZIndex, decreaseZIndex, setSelectedElement, setSelectedType, zIndices }) {
     return (
         <div id="canvas" className="border border-dark bg-light" style={{ height: '80vh', position: 'relative', overflow: 'hidden' }}>
             {texts.map((text, index) => (
                 <Draggable key={index} nodeRef={textRefs.current[index] || (textRefs.current[index] = React.createRef())}>
-                    <div ref={textRefs.current[index]} className="border border-secondary bg-white p-2 rounded position-absolute" style={{ cursor: 'move' }}>{text}</div>
+                    <div
+                        ref={textRefs.current[index]}
+                        className="border border-secondary bg-white p-2 rounded position-absolute text-element"
+                        style={{ cursor: 'move', zIndex: zIndices.texts[index] || 0 }}
+                        onClick={() => { setSelectedElement(index); setSelectedType('texts'); }}
+                    >
+                        {text}
+                    </div>
+
                 </Draggable>
             ))}
             {images.map((imgData, index) => (
                 <Draggable key={index} nodeRef={imageRefs.current[index] || (imageRefs.current[index] = React.createRef())}>
-                    <div ref={imageRefs.current[index]} className="position-absolute" style={{ cursor: 'move' }}>
+                    <div
+                        ref={imageRefs.current[index]}
+                        className="position-absolute"
+                        style={{ cursor: 'move', zIndex: zIndices.images[index] || 0 }}
+                        onClick={() => { setSelectedElement(index); setSelectedType('images'); }}
+                    >
                         <img src={imgData.src} style={{ width: imgData.width, height: imgData.height }} alt="User uploaded content" />
                         <div
                             style={{
